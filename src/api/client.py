@@ -101,8 +101,23 @@ class MetaAPIClient:
     async def _ensure_session(self) -> None:
         """Ensure HTTP session is available."""
         if self._session is None:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            # Use configurable timeout for Meta's Insights API which can be slow
+            timeout = aiohttp.ClientTimeout(
+                total=settings.api_timeout_total,
+                connect=settings.api_timeout_connect
+            )
+            # Configure connection pooling to prevent connection exhaustion
+            connector = aiohttp.TCPConnector(
+                limit=settings.connection_pool_size,  # Max total connections
+                limit_per_host=settings.connection_pool_per_host,  # Max connections per host
+                ttl_dns_cache=300,  # DNS cache for 5 minutes
+                force_close=False,  # Keep connections alive
+                enable_cleanup_closed=True
+            )
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            )
 
     async def _close_session(self) -> None:
         """Close HTTP session."""
@@ -111,7 +126,7 @@ class MetaAPIClient:
             self._session = None
 
     def _check_rate_limit(self) -> None:
-        """Check and enforce rate limiting."""
+        """Check and enforce rate limiting (synchronous version)."""
         current_time = time.time()
 
         # Reset window if needed
@@ -125,6 +140,28 @@ class MetaAPIClient:
             if sleep_time > 0:
                 logger.warning(f"Rate limit exceeded, sleeping for {sleep_time:.0f} seconds")
                 time.sleep(sleep_time)
+                self._request_count = 0
+                self._rate_limit_window_start = time.time()
+
+        self._request_count += 1
+        self._last_request_time = current_time
+
+    async def _check_rate_limit_async(self) -> None:
+        """Check and enforce rate limiting (async version - non-blocking)."""
+        current_time = time.time()
+
+        # Reset window if needed
+        if current_time - self._rate_limit_window_start > self._rate_limit_window_size:
+            self._request_count = 0
+            self._rate_limit_window_start = current_time
+
+        # Check if we've exceeded the limit
+        if self._request_count >= settings.max_requests_per_hour:
+            sleep_time = self._rate_limit_window_size - (current_time - self._rate_limit_window_start)
+            if sleep_time > 0:
+                logger.warning(f"Rate limit exceeded, sleeping for {sleep_time:.0f} seconds")
+                # Use asyncio.sleep instead of time.sleep to avoid blocking the event loop
+                await asyncio.sleep(sleep_time)
                 self._request_count = 0
                 self._rate_limit_window_start = time.time()
 
@@ -183,7 +220,7 @@ class MetaAPIClient:
                     'Authorization': f'Bearer {self.access_token}',
                     'Content-Type': 'application/json'
                 },
-                timeout=30
+                timeout=settings.api_timeout_total  # Use configurable timeout (default: 180s)
             )
 
             response.raise_for_status()
@@ -210,56 +247,67 @@ class MetaAPIClient:
                 error=f"Invalid JSON response: {e}"
             )
 
-    async def _make_async_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> APIResponse:
+    async def _make_async_request(self, method: str, endpoint: str, params: Optional[Dict] = None, retry_count: int = 3) -> APIResponse:
         """
-        Make an asynchronous API request.
+        Make an asynchronous API request with retry logic.
 
         Args:
             method: HTTP method (GET, POST, etc.)
             endpoint: API endpoint
             params: Request parameters
+            retry_count: Number of retries on failure
 
         Returns:
             APIResponse with success/data or error
         """
         await self._ensure_session()
-        self._check_rate_limit()
+        await self._check_rate_limit_async()  # Use async version to avoid blocking
 
-        try:
-            url = f"{META_API_BASE_URL}{endpoint}"
+        last_error = None
+        for attempt in range(retry_count):
+            try:
+                url = f"{META_API_BASE_URL}{endpoint}"
 
-            async with self._session.request(
-                method=method,
-                url=url,
-                params=params,
-                headers={
-                    'Authorization': f'Bearer {self.access_token}',
-                    'Content-Type': 'application/json'
-                }
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
+                async with self._session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    headers={
+                        'Authorization': f'Bearer {self.access_token}',
+                        'Content-Type': 'application/json'
+                    }
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
+                    return APIResponse(
+                        success=True,
+                        data=data,
+                        rate_limit_info=self._get_rate_limit_info(response.headers)
+                    )
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < retry_count - 1:
+                    # Exponential backoff: 1s, 2s, 4s
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Async API request failed (attempt {attempt + 1}/{retry_count}), retrying in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Async API request failed after {retry_count} attempts: {e}")
+            except ValueError as e:
+                logger.error(f"Failed to parse async API response: {e}")
                 return APIResponse(
-                    success=True,
-                    data=data,
-                    rate_limit_info=self._get_rate_limit_info(response.headers)
+                    success=False,
+                    data=None,
+                    error=f"Invalid JSON response: {e}"
                 )
 
-        except aiohttp.ClientError as e:
-            logger.error(f"Async API request failed: {e}")
-            return APIResponse(
-                success=False,
-                data=None,
-                error=str(e)
-            )
-        except ValueError as e:
-            logger.error(f"Failed to parse async API response: {e}")
-            return APIResponse(
-                success=False,
-                data=None,
-                error=f"Invalid JSON response: {e}"
-            )
+        return APIResponse(
+            success=False,
+            data=None,
+            error=f"Request failed after {retry_count} attempts: {str(last_error)}"
+        )
 
     def _get_rate_limit_info(self, headers: Dict[str, str]) -> Dict[str, Any]:
         """Extract rate limit information from response headers."""

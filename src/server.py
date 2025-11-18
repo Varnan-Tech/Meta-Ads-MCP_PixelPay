@@ -277,19 +277,55 @@ def token_status() -> str:
     try:
         status: dict = {"success": True}
 
+        # Add debug info about database
+        status["database"] = {
+            "url": settings.database_url
+        }
+
+        # Force database initialization if needed
+        try:
+            from .auth.database import init_database as init_db_func
+        except ImportError:
+            from auth.database import init_database as init_db_func
+
+        init_db_func()  # Ensure DB is initialized
+
         # Check OAuth DB for an active token
         db = get_db_session()
         try:
+            # Debug: count total tokens
+            total_tokens = db.query(FacebookToken).count()
+            status["database"]["total_tokens"] = total_tokens
+
+            # Check for active (non-revoked) tokens
             token = db.query(FacebookToken).filter(FacebookToken.revoked == False).order_by(FacebookToken.created_at.desc()).first()
             if token:
+                # Check expiration
+                from datetime import datetime, timezone
+                expires_at = token.expires_at
+                if expires_at and expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+                is_expired = expires_at and expires_at < datetime.now(timezone.utc) if expires_at else False
+
                 status["oauth"] = {
                     "present": True,
                     "fb_user_id": token.fb_user_id,
                     "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+                    "is_expired": is_expired,
                     "accounts_count": len(token.accounts) if token.accounts else 0,
+                    "permissions": token.permissions if hasattr(token, 'permissions') else []
                 }
             else:
                 status["oauth"] = {"present": False}
+                # Debug: check if there are any tokens at all
+                any_token = db.query(FacebookToken).first()
+                if any_token:
+                    status["oauth"]["debug"] = f"Found {total_tokens} total token(s) but all are revoked"
+                else:
+                    status["oauth"]["debug"] = "No tokens found in database at all"
+        except Exception as db_error:
+            status["oauth"] = {"present": False, "error": str(db_error)}
         finally:
             db.close()
 
@@ -308,7 +344,8 @@ def token_status() -> str:
 
         return json.dumps(status, indent=2)
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, indent=2)
+        import traceback
+        return json.dumps({"success": False, "error": str(e), "traceback": traceback.format_exc()}, indent=2)
 
 
 @mcp.tool()

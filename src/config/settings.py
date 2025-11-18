@@ -30,6 +30,16 @@ class Settings:
         # Rate Limiting
         self.max_requests_per_hour: int = int(os.getenv("MAX_REQUESTS_PER_HOUR", "200"))
 
+        # API Timeout Settings (in seconds)
+        # Default 180s handles worst-case Meta Insights API queries (large accounts, 30+ day ranges)
+        self.api_timeout_total: int = int(os.getenv("API_TIMEOUT_TOTAL", "180"))  # Total timeout
+        self.api_timeout_connect: int = int(os.getenv("API_TIMEOUT_CONNECT", "15"))  # Connect timeout
+        self.api_retry_count: int = int(os.getenv("API_RETRY_COUNT", "3"))  # Number of retries
+
+        # Connection Pool Settings
+        self.connection_pool_size: int = int(os.getenv("CONNECTION_POOL_SIZE", "100"))
+        self.connection_pool_per_host: int = int(os.getenv("CONNECTION_POOL_PER_HOST", "30"))
+
         # Cache Settings
         self.cache_ttl: int = int(os.getenv("CACHE_TTL", "300"))
         self.enable_cache: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"

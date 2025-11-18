@@ -149,7 +149,8 @@ def meta_get(path: str, params: Dict[str, Any]) -> Tuple[int, Any]:
     request_params["access_token"] = access_token
 
     try:
-        resp = requests.get(url, params=request_params, timeout=30)
+        # Optimal timeout for Meta's Insights API (handles worst-case: 180 seconds)
+        resp = requests.get(url, params=request_params, timeout=180)
 
         # Log request URL for debugging (without exposing token)
         debug_url = resp.request.url
