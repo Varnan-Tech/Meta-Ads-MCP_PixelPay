@@ -4,12 +4,14 @@ Ensures data integrity and prevents AI hallucination.
 """
 from typing import Dict, Any, List, Optional, Callable, Tuple
 import re
+from dataclasses import asdict
 
 try:
     # Try absolute imports first (when run as part of package)
     from ..auth.token_manager import token_manager
     from ..config.settings import settings
     from ..utils.logger import logger
+    from ..api.client import APIResponse
 except ImportError:
     # Fall back to relative imports (when run as script from src directory)
     import sys
@@ -19,6 +21,7 @@ except ImportError:
     from auth.token_manager import token_manager
     from config.settings import settings
     from utils.logger import logger
+    from api.client import APIResponse
 
 
 # Validation rules for different object types
@@ -303,6 +306,18 @@ def create_validation_wrapper(tool_function: Callable, tool_name: str) -> Callab
 
             # Execute the tool
             result = tool_function(*args, **kwargs)
+
+            # Convert APIResponse objects to standard dictionaries
+            if isinstance(result, APIResponse):
+                result_dict = {
+                    "success": result.success,
+                    "data": result.data
+                }
+                if result.error is not None:
+                    result_dict["error"] = result.error
+                if result.rate_limit_info is not None:
+                    result_dict["rate_limit_info"] = result.rate_limit_info
+                result = result_dict
 
             # Validate response integrity
             is_valid, validation_error = validate_response_integrity(result)
