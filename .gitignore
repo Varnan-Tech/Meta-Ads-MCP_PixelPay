@@ -266,3 +266,6 @@ temp/
 # Deployment documentation (local reference only)
 DEPLOYMENT.md
 FASTMCP_SETUP.md
+SETUP_FASTMCP.txt
+*_env_*.txt
+cloud_env_template.txt
