@@ -57,34 +57,47 @@ _SessionLocal = None
 def init_database() -> None:
     """Initialize database connection and create tables."""
     global _engine, _SessionLocal
-    
+
     if _engine is not None:
         return
-    
+
     database_url = settings.database_url
-    
-    # Ensure directory exists for SQLite
-    if database_url.startswith("sqlite"):
-        db_path = database_url.replace("sqlite:///", "")
-        db_dir = Path(db_path).parent
-        db_dir.mkdir(parents=True, exist_ok=True)
-    
-    _engine = create_engine(
-        database_url,
-        connect_args={"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    )
-    
-    # Create tables
-    Base.metadata.create_all(bind=_engine)
-    
-    _SessionLocal = sessionmaker(
-        autocommit=False,
-        autoflush=False,
-        expire_on_commit=False,  # keep attributes accessible after commit
-        bind=_engine,
-    )
-    
-    logger.info(f"Database initialized: {database_url}")
+
+    try:
+        # Ensure directory exists for SQLite
+        if database_url.startswith("sqlite"):
+            db_path = database_url.replace("sqlite:///", "")
+            db_dir = Path(db_path).parent
+            db_dir.mkdir(parents=True, exist_ok=True)
+
+        _engine = create_engine(
+            database_url,
+            connect_args={"check_same_thread": False} if database_url.startswith("sqlite") else {},
+            pool_pre_ping=True,  # Verify connections before using
+            pool_recycle=3600,   # Recycle connections after 1 hour
+        )
+
+        # Test connection
+        from sqlalchemy import text
+        with _engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        # Create tables
+        Base.metadata.create_all(bind=_engine)
+
+        _SessionLocal = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,  # keep attributes accessible after commit
+            bind=_engine,
+        )
+
+        logger.info(f"Database initialized successfully: {database_url}")
+
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Database URL: {database_url[:50]}...")  # Log partial URL for debugging
+        raise  # Re-raise to make the error visible
 
 
 def get_db() -> Generator[Session, None, None]:
