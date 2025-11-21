@@ -117,9 +117,13 @@ class FacebookOAuthService:
         # Use scopes as configured, or default to required scopes for ad account access
         scopes = settings.fb_oauth_scopes
         if not scopes or scopes == "public_profile":
-            # Fallback to scopes that actually work for ad account access
-            # ads_management is REQUIRED to access ad accounts via /me/adaccounts
-            scopes = "ads_management,business_management,public_profile"
+            # Fallback to complete scopes for full ad account access
+            # ads_management: Required to access and manage ad accounts
+            # business_management: Access business-owned ad accounts
+            # pages_show_list: Access Facebook Pages
+            # read_insights: Read ad performance metrics
+            # public_profile: Basic user info
+            scopes = "ads_management,business_management,pages_show_list,read_insights,public_profile"
         
         params = {
             "client_id": settings.fb_app_id,
