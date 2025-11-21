@@ -114,11 +114,12 @@ class FacebookOAuthService:
         Returns:
             Authorization URL
         """
-        # Use scopes as configured, or default to Pipeboard's working scope
+        # Use scopes as configured, or default to required scopes for ad account access
         scopes = settings.fb_oauth_scopes
         if not scopes or scopes == "public_profile":
-            # Fallback to Pipeboard's working scope string
-            scopes = "business_management,public_profile,pages_show_list,pages_read_engagement"
+            # Fallback to scopes that actually work for ad account access
+            # ads_management is REQUIRED to access ad accounts via /me/adaccounts
+            scopes = "ads_management,business_management,public_profile"
         
         params = {
             "client_id": settings.fb_app_id,
