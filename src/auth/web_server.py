@@ -181,25 +181,48 @@ async def auth_success():
     accounts_html = ""
     try:
         latest_token = db.query(FacebookToken).order_by(FacebookToken.created_at.desc()).first()
-        
-        if latest_token and latest_token.accounts:
-            import json
-            accounts = json.loads(latest_token.accounts) if isinstance(latest_token.accounts, str) else latest_token.accounts
-            accounts_html = "<div style='margin-top: 20px;'>"
-            for account in accounts:
-                account_name = html.escape(account.get('name', 'Unknown'))
-                account_id = html.escape(account.get('id', 'N/A'))
-                account_status = account.get('status', 'Unknown')
-                accounts_html += f"""
-                <div style='background: #f0f4f8; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #667eea;'>
-                    <strong>{account_name}</strong><br>
-                    <small>ID: {account_id}</small><br>
-                    <small>Status: {account_status}</small>
-                </div>
-                """
-            accounts_html += "</div>"
+
+        if latest_token:
+            logger.info(f"Loading accounts for token {latest_token.fb_user_id}, accounts field type: {type(latest_token.accounts)}")
+            logger.info(f"Accounts data: {latest_token.accounts}")
+
+            if latest_token.accounts:
+                import json
+                # Handle both string JSON and direct list
+                if isinstance(latest_token.accounts, str):
+                    try:
+                        accounts = json.loads(latest_token.accounts)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse accounts JSON: {e}")
+                        accounts = []
+                elif isinstance(latest_token.accounts, list):
+                    accounts = latest_token.accounts
+                else:
+                    logger.error(f"Unexpected accounts type: {type(latest_token.accounts)}")
+                    accounts = []
+
+                logger.info(f"Parsed {len(accounts)} accounts")
+
+                if accounts:
+                    accounts_html = "<div style='margin-top: 20px;'>"
+                    for account in accounts:
+                        account_name = html.escape(str(account.get('name', 'Unknown')))
+                        account_id = html.escape(str(account.get('id', 'N/A')))
+                        account_status = str(account.get('account_status', account.get('status', 'Unknown')))
+                        accounts_html += f"""
+                        <div style='background: #f0f4f8; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #667eea;'>
+                            <strong>{account_name}</strong><br>
+                            <small>ID: {account_id}</small><br>
+                            <small>Status: {account_status}</small>
+                        </div>
+                        """
+                    accounts_html += "</div>"
+            else:
+                logger.warning("No accounts data found in token record")
+        else:
+            logger.warning("No token record found")
     except Exception as e:
-        logger.error(f"Error loading accounts: {e}")
+        logger.error(f"Error loading accounts: {e}", exc_info=True)
     finally:
         db.close()
     
