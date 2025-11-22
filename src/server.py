@@ -497,15 +497,22 @@ def estimate_audience_size(account_id: str, targeting: Dict[str, Any], optimizat
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def search_behaviors(limit: int = 50) -> str:
-    """Get all available behavior targeting options."""
+def search_behaviors(behavior_class: str = "behaviors", limit: int = 50) -> str:
+    """
+    Get behavior targeting options by class.
+
+    Args:
+        behavior_class: Type of behaviors to retrieve. Options: 'behaviors', 'industries',
+                       'family_statuses', 'life_events' (default: 'behaviors')
+        limit: Maximum number of results to return (default: 50)
+    """
     try:
         from .tools.targeting import search_behaviors
     except ImportError:
         from tools.targeting import search_behaviors
 
     validated_search_behaviors = create_validation_wrapper(search_behaviors, 'search_behaviors')
-    result = validated_search_behaviors(limit=limit)
+    result = validated_search_behaviors(behavior_class=behavior_class, limit=limit)
     return json.dumps(result, indent=2)
 
 # Duplicate function removed - using the one above
