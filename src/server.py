@@ -113,16 +113,47 @@ def get_campaign_details(campaign_id: str) -> str:
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def create_campaign(account_id: str, name: str, objective: str, daily_budget: int = None, lifetime_budget: int = None, status: str = "PAUSED") -> str:
-    """Create a new ad campaign."""
+def create_campaign(
+    account_id: str,
+    name: str,
+    objective: str,
+    daily_budget: int = None,
+    lifetime_budget: int = None,
+    status: str = "PAUSED",
+    special_ad_categories: list = None
+) -> str:
+    """
+    Create a new ad campaign.
+
+    Args:
+        account_id: Ad account ID (with or without 'act_' prefix)
+        name: Campaign name
+        objective: Campaign objective (e.g., OUTCOME_TRAFFIC, OUTCOME_AWARENESS)
+        daily_budget: Daily budget in cents (e.g., 400000 = $4000 or ₹4000)
+        lifetime_budget: Lifetime budget in cents
+        status: Campaign status (ACTIVE or PAUSED, default: PAUSED)
+        special_ad_categories: List of special ad categories (use [] for normal ads)
+                              Options: CREDIT, EMPLOYMENT, HOUSING, ISSUES_ELECTIONS_POLITICS
+
+    Note: Budget should be in cents (smallest currency unit). For example:
+          - $40.00 = 4000 cents
+          - $4000.00 = 400000 cents
+    """
     try:
         from .tools.campaigns import create_campaign
     except ImportError:
         from tools.campaigns import create_campaign
 
     validated_create_campaign = create_validation_wrapper(create_campaign, 'create_campaign')
-    result = validated_create_campaign(account_id=account_id, name=name, objective=objective,
-                                     daily_budget=daily_budget, lifetime_budget=lifetime_budget, status=status)
+    result = validated_create_campaign(
+        account_id=account_id,
+        name=name,
+        objective=objective,
+        daily_budget=daily_budget,
+        lifetime_budget=lifetime_budget,
+        status=status,
+        special_ad_categories=special_ad_categories if special_ad_categories is not None else []
+    )
     return json.dumps(result, indent=2)
 
 @mcp.tool()

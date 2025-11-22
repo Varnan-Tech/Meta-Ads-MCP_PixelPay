@@ -176,23 +176,30 @@ def create_campaign(
     objective: str,
     daily_budget: Optional[int] = None,
     lifetime_budget: Optional[int] = None,
-    status: str = "PAUSED"
+    status: str = "PAUSED",
+    special_ad_categories: Optional[list] = None
 ) -> Dict[str, Any]:
     """
     Create a new ad campaign.
 
     Args:
-        account_id: Meta ad account ID
+        account_id: Meta ad account ID (format: act_XXXXX or just the numeric ID)
         name: Campaign name
         objective: Campaign objective (OUTCOME_AWARENESS, OUTCOME_TRAFFIC, etc.)
-        daily_budget: Daily budget in cents (optional)
+        daily_budget: Daily budget in cents (e.g., 400000 = $4000 or ₹4000)
         lifetime_budget: Lifetime budget in cents (optional)
         status: Campaign status (ACTIVE or PAUSED)
+        special_ad_categories: Special ad categories (empty list [] if not applicable)
+                               Options: CREDIT, EMPLOYMENT, HOUSING, ISSUES_ELECTIONS_POLITICS
 
     Returns:
         Dictionary with created campaign data
     """
     try:
+        # Normalize account ID (ensure act_ prefix)
+        if not account_id.startswith('act_'):
+            account_id = f"act_{account_id}"
+
         # Validate inputs
         validation = validate_campaign_input({
             'name': name,
@@ -206,13 +213,6 @@ def create_campaign(
             return {
                 "success": False,
                 "error": f"Validation failed: {validation['errors']}"
-            }
-
-        # Validate account ID format
-        if not account_id.startswith('act_'):
-            return {
-                "success": False,
-                "error": "Invalid account ID format. Expected format: act_XXXXX"
             }
 
         # Get token from token manager or settings
@@ -230,9 +230,12 @@ def create_campaign(
         campaign_data = {
             'name': name,
             'objective': objective,
-            'status': status
+            'status': status,
+            # CRITICAL: Meta API requires special_ad_categories (empty list if not applicable)
+            'special_ad_categories': special_ad_categories if special_ad_categories is not None else []
         }
 
+        # Add budget (convert to string as Meta API expects string format)
         if daily_budget:
             campaign_data['daily_budget'] = daily_budget
         elif lifetime_budget:
