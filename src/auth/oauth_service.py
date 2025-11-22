@@ -227,97 +227,175 @@ class FacebookOAuthService:
             logger.error(f"Failed to get user info: {e}")
             raise
     
+    def _fetch_paginated_data(self, url: str, params: Dict[str, Any], max_pages: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch all pages of data from a paginated Meta API endpoint.
+
+        Args:
+            url: Initial URL to fetch
+            params: Query parameters
+            max_pages: Maximum number of pages to fetch (safety limit)
+
+        Returns:
+            List of all items from all pages
+        """
+        all_data = []
+        current_url = url
+        current_params = params.copy()
+        page_count = 0
+
+        while current_url and page_count < max_pages:
+            try:
+                response = requests.get(current_url, params=current_params if page_count == 0 else None, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # Add items from this page
+                items = data.get("data", [])
+                all_data.extend(items)
+                page_count += 1
+
+                logger.debug(f"Fetched page {page_count} with {len(items)} items (total: {len(all_data)})")
+
+                # Check for next page
+                paging = data.get("paging", {})
+                current_url = paging.get("next")
+                current_params = None  # Next URL already has params
+
+                if not current_url:
+                    break
+
+            except Exception as e:
+                logger.warning(f"Error fetching page {page_count + 1}: {e}")
+                break
+
+        logger.info(f"Fetched {len(all_data)} total items across {page_count} pages")
+        return all_data
+
     def get_ad_accounts(self, access_token: str) -> List[Dict[str, Any]]:
         """
-        Get user's ad accounts.
-        
+        Get user's ad accounts with pagination support.
+
         Uses business_management permission to access ad accounts through businesses.
         Falls back to direct /me/adaccounts if business_management not available.
-        
+
         Args:
             access_token: Access token
-            
+
         Returns:
             List of ad account dicts
         """
         formatted_accounts = []
-        
+
         # Method 1: Try getting through businesses (with business_management permission)
         try:
-            # Get user's businesses
+            # Get user's businesses (with pagination)
             businesses_url = f"{self.base_url}/me/businesses"
             businesses_params = {
                 "access_token": access_token,
-                "fields": "id,name"
+                "fields": "id,name",
+                "limit": 100  # Request more per page
             }
-            
-            businesses_response = requests.get(businesses_url, params=businesses_params, timeout=10)
-            if businesses_response.status_code == 200:
-                businesses_data = businesses_response.json()
-                businesses = businesses_data.get("data", [])
-                
-                # For each business, get ad accounts
-                for business in businesses:
-                    business_id = business.get("id")
-                    ad_accounts_url = f"{self.base_url}/{business_id}/owned_ad_accounts"
-                    ad_accounts_params = {
-                        "access_token": access_token,
-                        "fields": "id,name,account_id,currency,account_status"
-                    }
-                    
-                    try:
-                        ad_accounts_response = requests.get(ad_accounts_url, params=ad_accounts_params, timeout=10)
-                        if ad_accounts_response.status_code == 200:
-                            ad_accounts_data = ad_accounts_response.json()
-                            accounts = ad_accounts_data.get("data", [])
-                            formatted_accounts.extend([
-                                {
-                                    "id": account.get("id"),
-                                    "name": account.get("name"),
-                                    "account_id": account.get("account_id"),
-                                    "currency": account.get("currency"),
-                                    "status": account.get("account_status"),
-                                    "business_id": business_id
-                                }
-                                for account in accounts
-                            ])
-                    except:
-                        continue  # Skip if business doesn't have ad accounts
-                        
-        except Exception as e:
-            logger.debug(f"Could not get ad accounts through businesses: {e}")
-        
-        # Method 2: Fallback to direct /me/adaccounts (if ads_management permission available)
-        if not formatted_accounts:
-            try:
-                url = f"{self.base_url}/me/adaccounts"
-                params = {
+
+            logger.info("Fetching businesses for ad account access")
+            businesses = self._fetch_paginated_data(businesses_url, businesses_params)
+            logger.info(f"Found {len(businesses)} businesses")
+
+            # For each business, get BOTH owned AND client ad accounts (with pagination)
+            for business in businesses:
+                business_id = business.get("id")
+                business_name = business.get("name", "Unknown")
+
+                all_business_accounts = []
+                owned_count = 0
+                client_count = 0
+
+                # 1. Fetch OWNED ad accounts
+                owned_accounts_url = f"{self.base_url}/{business_id}/owned_ad_accounts"
+                owned_params = {
                     "access_token": access_token,
-                    "fields": "id,name,account_id,currency,account_status"
+                    "fields": "id,name,account_id,currency,account_status",
+                    "limit": 100  # Request more per page
                 }
-                
-                response = requests.get(url, params=params, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                
-                if "error" in data:
-                    logger.warning(f"Ad accounts error: {data['error']}")
-                    # Don't raise - just return empty list
-                else:
-                    accounts = data.get("data", [])
-                    formatted_accounts = [
-                        {
+
+                try:
+                    logger.debug(f"Fetching owned ad accounts for business: {business_name} ({business_id})")
+                    owned_accounts = self._fetch_paginated_data(owned_accounts_url, owned_params)
+                    all_business_accounts.extend(owned_accounts)
+                    owned_count = len(owned_accounts)
+                    logger.info(f"Found {owned_count} owned accounts for business {business_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to get owned accounts for business {business_id}: {e}")
+
+                # 2. Fetch CLIENT ad accounts (agencies/partners managing client accounts)
+                # Note: This doubles API calls per business but is necessary for full account access
+                # Rate limit consideration: With business_management permission, typical limit is 200 calls/hour
+                # For 50 businesses: 50 owned + 50 client = 100 calls (within limit)
+                client_accounts_url = f"{self.base_url}/{business_id}/client_ad_accounts"
+                client_params = {
+                    "access_token": access_token,
+                    # Using minimal fields for client accounts as some fields may have restricted permissions
+                    "fields": "id,name,account_id,currency,account_status",
+                    "limit": 100  # Request more per page
+                }
+
+                try:
+                    logger.debug(f"Fetching client ad accounts for business: {business_name} ({business_id})")
+                    client_accounts = self._fetch_paginated_data(client_accounts_url, client_params)
+                    all_business_accounts.extend(client_accounts)
+                    client_count = len(client_accounts)
+                    logger.info(f"Found {client_count} client accounts for business {business_name}")
+                except Exception as e:
+                    # Client accounts may fail if business has no client relationships or restricted permissions
+                    logger.debug(f"No client accounts or restricted access for business {business_id}: {e}")
+
+                # 3. Format and add ALL accounts (owned + client) with error handling for field access
+                for account in all_business_accounts:
+                    try:
+                        formatted_accounts.append({
                             "id": account.get("id"),
                             "name": account.get("name"),
                             "account_id": account.get("account_id"),
                             "currency": account.get("currency"),
-                            "status": account.get("account_status")
-                        }
-                        for account in accounts
-                    ]
+                            # account_status may be restricted on some client accounts
+                            "status": account.get("account_status"),
+                            "business_id": business_id
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to format account {account.get('id', 'unknown')}: {e}")
+                        continue
+
+                logger.info(f"Total for business {business_name}: {owned_count} owned + {client_count} client = {len(all_business_accounts)} accounts")
+
+        except Exception as e:
+            logger.debug(f"Could not get ad accounts through businesses: {e}")
+
+        # Method 2: Fallback to direct /me/adaccounts (if ads_management permission available)
+        if not formatted_accounts:
+            try:
+                logger.info("Fetching ad accounts via direct /me/adaccounts endpoint")
+                url = f"{self.base_url}/me/adaccounts"
+                params = {
+                    "access_token": access_token,
+                    "fields": "id,name,account_id,currency,account_status",
+                    "limit": 100  # Request more per page
+                }
+
+                accounts = self._fetch_paginated_data(url, params)
+
+                formatted_accounts = [
+                    {
+                        "id": account.get("id"),
+                        "name": account.get("name"),
+                        "account_id": account.get("account_id"),
+                        "currency": account.get("currency"),
+                        "status": account.get("account_status")
+                    }
+                    for account in accounts
+                ]
             except requests.RequestException as e:
                 logger.warning(f"Failed to get ad accounts via direct method: {e}")
-        
+
         return formatted_accounts
     
     def save_token(
