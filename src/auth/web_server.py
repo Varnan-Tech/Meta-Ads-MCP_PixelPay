@@ -5,6 +5,7 @@ This runs separately from the MCP server to handle HTTP requests.
 import html
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,11 +33,43 @@ except ImportError:
     from auth.web_server_token_endpoint import router as token_router
     from auth.token_manager import token_manager
 
-# Initialize FastAPI app
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for startup and shutdown events.
+    Replaces deprecated @app.on_event("startup") and @app.on_event("shutdown").
+    """
+    # Startup
+    init_database()
+
+    # Start token refresh worker
+    try:
+        from .token_refresh_worker import start_refresh_worker
+        start_refresh_worker()
+        logger.info("Token refresh worker started")
+    except Exception as e:
+        logger.warning(f"Failed to start token refresh worker: {e}")
+
+    logger.info("OAuth web server started")
+
+    yield
+
+    # Shutdown
+    try:
+        from .token_refresh_worker import stop_refresh_worker
+        stop_refresh_worker()
+        logger.info("Token refresh worker stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping token refresh worker: {e}")
+
+
+# Initialize FastAPI app with lifespan
 app = FastAPI(
     title="Meta Ads MCP OAuth Server",
     description="OAuth endpoints for Facebook Login integration",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware (adjust for production)
@@ -50,33 +83,6 @@ app.add_middleware(
 
 # Include token processing router (implicit flow callback handler)
 app.include_router(token_router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and start background workers on startup."""
-    init_database()
-    
-    # Start token refresh worker
-    try:
-        from .token_refresh_worker import start_refresh_worker
-        start_refresh_worker()
-        logger.info("Token refresh worker started")
-    except Exception as e:
-        logger.warning(f"Failed to start token refresh worker: {e}")
-    
-    logger.info("OAuth web server started")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Stop background workers on shutdown."""
-    try:
-        from .token_refresh_worker import stop_refresh_worker
-        stop_refresh_worker()
-        logger.info("Token refresh worker stopped")
-    except Exception as e:
-        logger.warning(f"Error stopping token refresh worker: {e}")
 
 
 # Mount static files (if static directory exists)
