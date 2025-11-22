@@ -210,19 +210,44 @@ async def auth_success():
                 logger.info(f"Parsed {len(accounts)} accounts")
 
                 if accounts:
-                    accounts_html = "<div style='margin-top: 20px;'>"
-                    for account in accounts:
+                    # Calculate summary statistics
+                    total_count = len(accounts)
+
+                    # Build accounts HTML with limit for performance
+                    accounts_html = f"""
+                    <div style='background: #e0e7ff; padding: 12px; border-radius: 8px; margin: 15px 0;'>
+                        <strong style='color: #4338ca;'>✓ {total_count} ad accounts connected</strong>
+                    </div>
+                    """
+
+                    # Show first 10 accounts only for performance
+                    display_limit = 10
+                    accounts_html += "<div style='margin-top: 15px; max-height: 400px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px;'>"
+
+                    for i, account in enumerate(accounts[:display_limit]):
                         account_name = html.escape(str(account.get('name', 'Unknown')))
                         account_id = html.escape(str(account.get('id', 'N/A')))
                         account_status = str(account.get('account_status', account.get('status', 'Unknown')))
                         accounts_html += f"""
-                        <div style='background: #f0f4f8; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #667eea;'>
-                            <strong>{account_name}</strong><br>
-                            <small>ID: {account_id}</small><br>
-                            <small>Status: {account_status}</small>
+                        <div style='background: #f9fafb; padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 3px solid #667eea;'>
+                            <div style='font-weight: 600; color: #1f2937;'>{account_name}</div>
+                            <div style='font-size: 12px; color: #6b7280; margin-top: 4px;'>ID: {account_id} • Status: {account_status}</div>
                         </div>
                         """
+
                     accounts_html += "</div>"
+
+                    # Show "and X more" message if there are more accounts
+                    if total_count > display_limit:
+                        remaining = total_count - display_limit
+                        accounts_html += f"""
+                        <p style='color: #6b7280; font-size: 14px; margin-top: 10px; text-align: center;'>
+                            ... and {remaining} more account{'s' if remaining > 1 else ''}
+                        </p>
+                        <p style='color: #4b5563; font-size: 13px; margin-top: 8px; text-align: center;'>
+                            View all accounts in <a href='/admin/facebook/connections' style='color: #667eea; text-decoration: underline;'>Connections page</a>
+                        </p>
+                        """
             else:
                 logger.warning("No accounts data found in token record")
         else:
