@@ -176,23 +176,36 @@ def create_campaign(
     objective: str,
     daily_budget: Optional[int] = None,
     lifetime_budget: Optional[int] = None,
-    status: str = "PAUSED"
+    status: str = "PAUSED",
+    special_ad_categories: Optional[list] = None
 ) -> Dict[str, Any]:
     """
     Create a new ad campaign.
 
     Args:
-        account_id: Meta ad account ID
+        account_id: Meta ad account ID (format: act_XXXXX or just the numeric ID)
         name: Campaign name
         objective: Campaign objective (OUTCOME_AWARENESS, OUTCOME_TRAFFIC, etc.)
-        daily_budget: Daily budget in cents (optional)
-        lifetime_budget: Lifetime budget in cents (optional)
+        daily_budget: Daily budget in smallest currency unit
+                     - For USD/EUR/INR (2 decimals): multiply by 100 (e.g., $4000 = 400000)
+                     - For JPY/KRW (0 decimals): use actual amount (e.g., ¥4000 = 4000)
+                     - For BHD/KWD (3 decimals): multiply by 1000
+        lifetime_budget: Lifetime budget in smallest currency unit
         status: Campaign status (ACTIVE or PAUSED)
+        special_ad_categories: Special ad categories (empty list [] if not applicable)
+                               Options: CREDIT, EMPLOYMENT, HOUSING, ISSUES_ELECTIONS_POLITICS
 
     Returns:
         Dictionary with created campaign data
+
+    Note: Meta API uses the account's currency automatically. The budget value
+          represents the smallest unit of that currency (cents for USD, paise for INR, etc.)
     """
     try:
+        # Normalize account ID (ensure act_ prefix)
+        if not account_id.startswith('act_'):
+            account_id = f"act_{account_id}"
+
         # Validate inputs
         validation = validate_campaign_input({
             'name': name,
@@ -208,13 +221,6 @@ def create_campaign(
                 "error": f"Validation failed: {validation['errors']}"
             }
 
-        # Validate account ID format
-        if not account_id.startswith('act_'):
-            return {
-                "success": False,
-                "error": "Invalid account ID format. Expected format: act_XXXXX"
-            }
-
         # Get token from token manager or settings
         access_token = token_manager.get_token(account_id) or token_manager.get_token() or settings.meta_access_token
         if not access_token:
@@ -226,13 +232,37 @@ def create_campaign(
         # Initialize API client
         client = MetaAPIClient(access_token)
 
+        # Get account info to check currency (for logging/validation)
+        account_response = client.get_account_info(account_id)
+        account_currency = None
+        if account_response.success and account_response.data:
+            account_currency = account_response.data.get('currency', 'UNKNOWN')
+            logger.info(f"Creating campaign for account with currency: {account_currency}")
+
+            # Currency-specific validation hints
+            currency_multipliers = {
+                'USD': 100, 'EUR': 100, 'GBP': 100, 'INR': 100, 'CAD': 100, 'AUD': 100,
+                'JPY': 1, 'KRW': 1,  # No decimal places
+                'BHD': 1000, 'KWD': 1000, 'OMR': 1000, 'TND': 1000  # 3 decimal places
+            }
+
+            if account_currency in currency_multipliers:
+                multiplier = currency_multipliers[account_currency]
+                if daily_budget:
+                    logger.info(f"Daily budget: {daily_budget} (= {daily_budget/multiplier:.2f} {account_currency})")
+                elif lifetime_budget:
+                    logger.info(f"Lifetime budget: {lifetime_budget} (= {lifetime_budget/multiplier:.2f} {account_currency})")
+
         # Prepare campaign data
         campaign_data = {
             'name': name,
             'objective': objective,
-            'status': status
+            'status': status,
+            # CRITICAL: Meta API requires special_ad_categories (empty list if not applicable)
+            'special_ad_categories': special_ad_categories if special_ad_categories is not None else []
         }
 
+        # Add budget (Meta API expects integer in smallest currency unit)
         if daily_budget:
             campaign_data['daily_budget'] = daily_budget
         elif lifetime_budget:
@@ -244,11 +274,15 @@ def create_campaign(
         if not response.success:
             return {
                 "success": False,
-                "error": f"Failed to create campaign: {response.error}"
+                "error": f"Failed to create campaign: {response.error}",
+                "account_currency": account_currency
             }
 
         # Format response
-        return format_campaign_create_response(response.data)
+        result = format_campaign_create_response(response.data)
+        if account_currency:
+            result['account_currency'] = account_currency
+        return result
 
     except Exception as e:
         logger.error(f"Error in create_campaign for {account_id}: {e}")

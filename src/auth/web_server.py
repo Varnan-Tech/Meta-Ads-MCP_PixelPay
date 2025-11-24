@@ -5,6 +5,7 @@ This runs separately from the MCP server to handle HTTP requests.
 import html
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, Depends
 from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,11 +33,43 @@ except ImportError:
     from auth.web_server_token_endpoint import router as token_router
     from auth.token_manager import token_manager
 
-# Initialize FastAPI app
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for startup and shutdown events.
+    Replaces deprecated @app.on_event("startup") and @app.on_event("shutdown").
+    """
+    # Startup
+    init_database()
+
+    # Start token refresh worker
+    try:
+        from .token_refresh_worker import start_refresh_worker
+        start_refresh_worker()
+        logger.info("Token refresh worker started")
+    except Exception as e:
+        logger.warning(f"Failed to start token refresh worker: {e}")
+
+    logger.info("OAuth web server started")
+
+    yield
+
+    # Shutdown
+    try:
+        from .token_refresh_worker import stop_refresh_worker
+        stop_refresh_worker()
+        logger.info("Token refresh worker stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping token refresh worker: {e}")
+
+
+# Initialize FastAPI app with lifespan
 app = FastAPI(
     title="Meta Ads MCP OAuth Server",
     description="OAuth endpoints for Facebook Login integration",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # CORS middleware (adjust for production)
@@ -50,33 +83,6 @@ app.add_middleware(
 
 # Include token processing router (implicit flow callback handler)
 app.include_router(token_router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and start background workers on startup."""
-    init_database()
-    
-    # Start token refresh worker
-    try:
-        from .token_refresh_worker import start_refresh_worker
-        start_refresh_worker()
-        logger.info("Token refresh worker started")
-    except Exception as e:
-        logger.warning(f"Failed to start token refresh worker: {e}")
-    
-    logger.info("OAuth web server started")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Stop background workers on shutdown."""
-    try:
-        from .token_refresh_worker import stop_refresh_worker
-        stop_refresh_worker()
-        logger.info("Token refresh worker stopped")
-    except Exception as e:
-        logger.warning(f"Error stopping token refresh worker: {e}")
 
 
 # Mount static files (if static directory exists)
@@ -636,9 +642,9 @@ async def webhook_deauth(request: Request):
         if not user_id:
             logger.warning("Deauth webhook missing user_id")
             return JSONResponse({"status": "ok"})  # Still return 200
-        
-        # Revoke token
-        oauth_service.revoke_token(str(user_id))
+
+        # Revoke token (Facebook has already revoked it on their side, just update our DB)
+        oauth_service.revoke_token(str(user_id), call_meta_api=False)
         logger.info(f"Revoked token for FB user: {user_id}")
         
         return JSONResponse({"status": "ok"})
@@ -676,13 +682,18 @@ class LogoutRequest(BaseModel):
 
 @app.post("/admin/facebook/logout")
 async def admin_logout(payload: LogoutRequest):
-    """Revoke stored token(s) for the specified user_id or fb_user_id."""
+    """
+    Revoke stored token(s) for the specified user_id or fb_user_id.
+
+    SECURITY: This properly revokes tokens on Meta's servers via DELETE /permissions,
+    not just in the local database. This ensures tokens become truly invalid.
+    """
     db = get_db_session()
     try:
         if not payload.user_id and not payload.fb_user_id:
             raise HTTPException(status_code=400, detail="Provide user_id or fb_user_id")
 
-        query = db.query(FacebookToken)
+        query = db.query(FacebookToken).filter(FacebookToken.revoked == False)
         if payload.fb_user_id:
             query = query.filter(FacebookToken.fb_user_id == payload.fb_user_id)
         elif payload.user_id:
@@ -692,17 +703,31 @@ async def admin_logout(payload: LogoutRequest):
         if not tokens:
             return JSONResponse({"success": True, "revoked": 0})
 
+        # Revoke each token properly (calls Meta API + updates DB)
         revoked = 0
-        for t in tokens:
-            t.revoked = True
-            revoked += 1
-        db.commit()
-        logger.info(f"Revoked {revoked} token(s) for logout request")
-        return JSONResponse({"success": True, "revoked": revoked})
+        failed = 0
+
+        for token in tokens:
+            try:
+                success = oauth_service.revoke_token(
+                    fb_user_id=token.fb_user_id,
+                    call_meta_api=True  # Actually invalidate on Meta's servers
+                )
+                if success:
+                    revoked += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"Error revoking token: {e}")
+
+        # Don't need db.commit() - revoke_token() already commits
+
+        logger.info(f"Revoked {revoked} token(s) for logout request (failed: {failed})")
+        return JSONResponse({"success": True, "revoked": revoked, "failed": failed})
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
         logger.error(f"Logout failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -1196,37 +1221,55 @@ async def logout_page():
 
 @app.post("/api/logout")
 async def api_logout():
-    """API endpoint to revoke all active tokens for the current user."""
+    """
+    API endpoint to revoke all active tokens for the current user.
+
+    SECURITY: This properly revokes tokens on Meta's servers via DELETE /permissions,
+    not just in the local database. This ensures tokens become truly invalid.
+    """
     db = get_db_session()
     try:
         # Get all active tokens
         active_tokens = db.query(FacebookToken).filter(FacebookToken.revoked == False).all()
-        
+
         if not active_tokens:
             return JSONResponse({
                 "success": True,
                 "message": "No active tokens to revoke",
                 "revoked_count": 0
             })
-        
-        # Revoke all tokens
+
+        # Revoke each token properly (calls Meta API + updates DB)
         revoked_count = 0
+        failed_count = 0
+
         for token in active_tokens:
-            token.revoked = True
-            token.updated_at = datetime.now(timezone.utc)
-            revoked_count += 1
-        
-        db.commit()
-        
-        logger.info(f"Revoked {revoked_count} token(s) via logout")
-        
+            try:
+                success = oauth_service.revoke_token(
+                    fb_user_id=token.fb_user_id,
+                    call_meta_api=True  # Actually invalidate on Meta's servers
+                )
+                if success:
+                    revoked_count += 1
+                else:
+                    failed_count += 1
+                    logger.warning(f"Failed to revoke token for user: {token.fb_user_id}")
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"Error revoking token for user {token.fb_user_id}: {e}")
+                # Continue with next token
+
+        # Don't need db.commit() - revoke_token() already commits
+
+        logger.info(f"Revoked {revoked_count} token(s) via logout (failed: {failed_count})")
+
         return JSONResponse({
             "success": True,
             "message": f"Successfully revoked {revoked_count} access token(s)",
-            "revoked_count": revoked_count
+            "revoked_count": revoked_count,
+            "failed_count": failed_count
         })
     except Exception as e:
-        db.rollback()
         logger.error(f"Logout failed: {e}")
         return JSONResponse({
             "success": False,

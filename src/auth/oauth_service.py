@@ -569,29 +569,83 @@ class FacebookOAuthService:
             logger.error(f"Failed to refresh token: {e}")
             return False
     
-    def revoke_token(self, fb_user_id: str) -> bool:
+    def revoke_token(self, fb_user_id: str, call_meta_api: bool = True) -> bool:
         """
-        Mark token as revoked (e.g., on deauth).
-        
+        Revoke token both on Meta's servers and locally.
+
+        SECURITY: This method actually invalidates the token on Meta's servers
+        by calling DELETE /{user-id}/permissions. Without this, tokens remain
+        valid even after "revocation" in the local database.
+
         Args:
             fb_user_id: Facebook user ID
-            
+            call_meta_api: If True, calls Meta API to invalidate token (default: True)
+                           Set to False only for webhook deauth (token already revoked by Meta)
+
         Returns:
-            True if revoked
+            True if revoked successfully
         """
         db = get_db_session()
         try:
             token_record = db.query(FacebookToken).filter(
-                FacebookToken.fb_user_id == fb_user_id
+                FacebookToken.fb_user_id == fb_user_id,
+                FacebookToken.revoked == False
             ).first()
-            
-            if token_record:
+
+            if not token_record:
+                logger.warning(f"No active token found for FB user: {fb_user_id}")
+                return False
+
+            # Step 1: Decrypt the access token
+            try:
+                access_token = self.encryption.decrypt(token_record.encrypted_access_token)
+            except Exception as e:
+                logger.error(f"Failed to decrypt token for revocation: {e}")
+                # Still mark as revoked locally to be safe
                 token_record.revoked = True
                 token_record.updated_at = datetime.now(timezone.utc)
                 db.commit()
-                logger.info(f"Revoked token for FB user: {fb_user_id}")
-                return True
-            return False
+                return False
+
+            # Step 2: Call Meta API to actually invalidate the token (if requested)
+            if call_meta_api:
+                try:
+                    # Delete all permissions - this invalidates the token on Meta's servers
+                    url = f"{self.base_url}/{fb_user_id}/permissions"
+
+                    logger.info(f"Calling Meta API to revoke token for user: {fb_user_id}")
+                    response = requests.delete(
+                        url,
+                        params={"access_token": access_token},
+                        timeout=10
+                    )
+
+                    response.raise_for_status()
+
+                    # Check response
+                    data = response.json()
+                    if data.get("success"):
+                        logger.info(f"✅ Successfully revoked token on Meta API for user: {fb_user_id}")
+                    else:
+                        logger.warning(f"Meta API revocation returned unexpected response: {data}")
+
+                except requests.exceptions.HTTPError as e:
+                    logger.error(f"Meta API revocation failed with HTTP error: {e}")
+                    # Continue to mark as revoked locally anyway for safety
+                except Exception as e:
+                    logger.error(f"Failed to revoke token on Meta API: {e}")
+                    # Continue to mark as revoked locally anyway for safety
+            else:
+                logger.info(f"Skipping Meta API call (token already revoked by Facebook webhook)")
+
+            # Step 3: Mark as revoked in local database
+            token_record.revoked = True
+            token_record.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            logger.info(f"Marked token as revoked in database for FB user: {fb_user_id}")
+            return True
+
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to revoke token: {e}")

@@ -113,16 +113,60 @@ def get_campaign_details(campaign_id: str) -> str:
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def create_campaign(account_id: str, name: str, objective: str, daily_budget: int = None, lifetime_budget: int = None, status: str = "PAUSED") -> str:
-    """Create a new ad campaign."""
+def create_campaign(
+    account_id: str,
+    name: str,
+    objective: str,
+    daily_budget: int = None,
+    lifetime_budget: int = None,
+    status: str = "PAUSED",
+    special_ad_categories: list = None
+) -> str:
+    """
+    Create a new ad campaign.
+
+    Args:
+        account_id: Ad account ID (with or without 'act_' prefix)
+        name: Campaign name
+        objective: Campaign objective (e.g., OUTCOME_TRAFFIC, OUTCOME_AWARENESS)
+        daily_budget: Daily budget in smallest currency unit (see conversion guide below)
+        lifetime_budget: Lifetime budget in smallest currency unit
+        status: Campaign status (ACTIVE or PAUSED, default: PAUSED)
+        special_ad_categories: List of special ad categories (use [] for normal ads)
+                              Options: CREDIT, EMPLOYMENT, HOUSING, ISSUES_ELECTIONS_POLITICS
+
+    Currency Conversion Guide:
+        Most currencies (USD, EUR, GBP, INR, etc.) - multiply by 100:
+          - $40.00 = 4000
+          - $4000.00 = 400000
+          - ₹4000 = 400000
+          - €4000 = 400000
+
+        Zero-decimal currencies (JPY, KRW) - use actual amount:
+          - ¥4000 = 4000
+          - ₩4000 = 4000
+
+        Three-decimal currencies (BHD, KWD, OMR, TND) - multiply by 1000:
+          - 4.000 KWD = 4000
+
+    Note: The tool automatically detects your account currency and logs the
+          converted amount for verification.
+    """
     try:
         from .tools.campaigns import create_campaign
     except ImportError:
         from tools.campaigns import create_campaign
 
     validated_create_campaign = create_validation_wrapper(create_campaign, 'create_campaign')
-    result = validated_create_campaign(account_id=account_id, name=name, objective=objective,
-                                     daily_budget=daily_budget, lifetime_budget=lifetime_budget, status=status)
+    result = validated_create_campaign(
+        account_id=account_id,
+        name=name,
+        objective=objective,
+        daily_budget=daily_budget,
+        lifetime_budget=lifetime_budget,
+        status=status,
+        special_ad_categories=special_ad_categories if special_ad_categories is not None else []
+    )
     return json.dumps(result, indent=2)
 
 @mcp.tool()
@@ -174,17 +218,8 @@ def search_demographics(demographic_class: str, limit: int = 50) -> str:
     result = validated_search_demographics(demographic_class=demographic_class, limit=limit)
     return json.dumps(result, indent=2)
 
-@mcp.tool()
-def search_locations(query: str, location_types: list, limit: int = 25) -> str:
-    """Search for geographic targeting locations."""
-    try:
-        from .tools.targeting import search_locations
-    except ImportError:
-        from tools.targeting import search_locations
-
-    validated_search_locations = create_validation_wrapper(search_locations, 'search_locations')
-    result = validated_search_locations(query=query, location_types=location_types, limit=limit)
-    return json.dumps(result, indent=2)
+# Note: search_locations was a duplicate of search_geo_locations (defined below)
+# and has been removed to avoid confusion
 
 @mcp.tool()
 def get_adsets(account_id: str, campaign_id: str = None, status: str = None, limit: int = 100) -> str:
@@ -453,15 +488,22 @@ def estimate_audience_size(account_id: str, targeting: Dict[str, Any], optimizat
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-def search_behaviors(limit: int = 50) -> str:
-    """Get all available behavior targeting options."""
+def search_behaviors(behavior_class: str = "behaviors", limit: int = 50) -> str:
+    """
+    Get behavior targeting options by class.
+
+    Args:
+        behavior_class: Type of behaviors to retrieve. Options: 'behaviors', 'industries',
+                       'family_statuses', 'life_events' (default: 'behaviors')
+        limit: Maximum number of results to return (default: 50)
+    """
     try:
         from .tools.targeting import search_behaviors
     except ImportError:
         from tools.targeting import search_behaviors
 
     validated_search_behaviors = create_validation_wrapper(search_behaviors, 'search_behaviors')
-    result = validated_search_behaviors(limit=limit)
+    result = validated_search_behaviors(behavior_class=behavior_class, limit=limit)
     return json.dumps(result, indent=2)
 
 # Duplicate function removed - using the one above

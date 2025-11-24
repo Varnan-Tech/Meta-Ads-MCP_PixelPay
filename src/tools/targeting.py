@@ -302,7 +302,26 @@ def estimate_audience_size(
                 }
             }
         )
-    
+
+    # Validate optimization_goal parameter
+    VALID_OPTIMIZATION_GOALS = [
+        'REACH', 'LINK_CLICKS', 'IMPRESSIONS', 'CONVERSIONS',
+        'APP_INSTALLS', 'OFFSITE_CONVERSIONS', 'LEAD_GENERATION',
+        'POST_ENGAGEMENT', 'PAGE_LIKES', 'EVENT_RESPONSES',
+        'MESSAGES', 'VIDEO_VIEWS', 'THRUPLAY', 'LANDING_PAGE_VIEWS'
+    ]
+
+    if optimization_goal and optimization_goal not in VALID_OPTIMIZATION_GOALS:
+        return APIResponse(
+            success=False,
+            data=None,
+            error={
+                "message": f"Invalid optimization_goal: '{optimization_goal}'",
+                "valid_options": VALID_OPTIMIZATION_GOALS,
+                "details": "Please use one of the valid optimization goals listed above."
+            }
+        )
+
     # Get access token internally
     access_token = get_access_token()
     if not access_token:
@@ -319,6 +338,7 @@ def estimate_audience_size(
     endpoint = f"{account_id}/reachestimate"
     params = {
         "targeting_spec": json.dumps(targeting),
+        "optimization_goal": optimization_goal,
         "access_token": access_token
     }
     
@@ -362,12 +382,15 @@ def estimate_audience_size(
 
 
 def search_behaviors(
+    behavior_class: str = "behaviors",
     limit: int = 50
 ) -> APIResponse:
     """
-    Get all available behavior targeting options.
+    Get behavior targeting options by class.
 
     Args:
+        behavior_class: Type of behaviors to retrieve. Options: 'behaviors', 'industries',
+                       'family_statuses', 'life_events' (default: 'behaviors')
         limit: Maximum number of results to return (default: 50)
 
     Returns:
@@ -375,13 +398,25 @@ def search_behaviors(
         path, and description
 
     Example:
-        response = search_behaviors(limit=20)
+        response = search_behaviors(behavior_class="behaviors", limit=20)
         # Returns behavior targeting options like "Small business owners", "Frequent travelers", etc.
+
+        response = search_behaviors(behavior_class="industries", limit=10)
+        # Returns industry targeting options like "Technology", "Healthcare", etc.
     """
     try:
         from ..utils.meta_http import meta_api_get, get_access_token
     except ImportError:
         from utils.meta_http import meta_api_get, get_access_token
+
+    # Validate behavior_class parameter
+    valid_classes = ["behaviors", "industries", "family_statuses", "life_events"]
+    if behavior_class not in valid_classes:
+        return APIResponse(
+            success=False,
+            data=None,
+            error=f"Invalid behavior_class: '{behavior_class}'. Valid options: {', '.join(valid_classes)}"
+        )
 
     # Get access token internally
     access_token = get_access_token()
@@ -395,20 +430,20 @@ def search_behaviors(
     endpoint = "search"
     params = {
         "type": "adTargetingCategory",
-        "class": "behaviors",
+        "class": behavior_class,
         "limit": limit,
         "access_token": access_token
     }
-    
-    logger.info("Searching behavior targeting options")
+
+    logger.info(f"Searching '{behavior_class}' targeting options")
     status_code, data = meta_api_get(endpoint, params)
-    
+
     if status_code == 200:
-        logger.info(f"Found {len(data.get('data', []))} behavior targeting options")
+        logger.info(f"Found {len(data.get('data', []))} {behavior_class} targeting options")
         return APIResponse(success=True, data=data)
     else:
-        logger.error(f"Behavior search failed: {data}")
-        return APIResponse(success=False, data=None, error=f"Failed to search behaviors: {data}")
+        logger.error(f"{behavior_class.capitalize()} search failed: {data}")
+        return APIResponse(success=False, data=None, error=f"Failed to search {behavior_class}: {data}")
 
 
 def search_demographics(
